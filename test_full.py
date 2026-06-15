@@ -1,39 +1,35 @@
-import openwakeword
 import whisper
 import sounddevice
 import numpy as np
-import time
 
 print("=" * 60)
-print("OpenWakeWord + Whisper Voice Assistant - Integration Test")
+print("Whisper 中文语音助手 - 集成测试")
 print("=" * 60)
 print()
 
-print("[1/4] Loading wakeword model (hey_jarvis, ONNX)...")
-m = openwakeword.Model(wakeword_models=['hey_jarvis'], inference_framework='onnx')
-print("      OK - wakeword model loaded")
-
-print("[2/4] Testing wakeword prediction...")
-audio = np.zeros(1280, dtype=np.float32)
-for i in range(5):
-    preds = m.predict(audio)
-print(f"      OK - predictions: {preds}")
-
-print("[3/4] Loading whisper model (base)...")
+print("[1/3] 加载 Whisper base 模型...")
 w = whisper.load_model('base')
-print("      OK - whisper model loaded")
+print("      OK - Whisper 模型加载成功")
 
-print("[4/4] Testing transcription...")
-audio = np.zeros(16000, dtype=np.float32)
+print("[2/3] 测试语音识别...")
+audio = np.zeros(16000, dtype=np.float32)  # 1 秒静音
 result = w.transcribe(audio, language='zh', fp16=False)
 text = result["text"]
-print(f"      OK - transcription result: '{text}'")
+print(f"      OK - 识别结果: '{text}'")
+
+print("[3/3] 测试音频设备...")
+devices = sounddevice.query_devices()
+default = sounddevice.default.device
+print(f"      OK - 发现 {len(devices)} 个音频设备")
+print(f"           默认输入设备 ID: {default[0]}")
+print(f"           默认输出设备 ID: {default[1]}")
 
 print()
 print("=" * 60)
-print("ALL TESTS PASSED!")
-print("Project is ready to use.")
+print("所有测试通过！")
 print("=" * 60)
 print()
-print("Run 'python main.py' to start the voice assistant.")
-print("Say 'hey jarvis' to activate voice recognition.")
+print("唤醒词: 小助手, 你好助手, 助手, 你好小助手, 嘿小助手")
+print("运行 'python main.py' 启动语音助手")
+print("说任意唤醒词即可触发命令识别")
+print("说 'stop' 或 '停止' 退出程序")

@@ -1,9 +1,7 @@
 import os
 import sys
-import subprocess
 import sounddevice as sd
 import numpy as np
-import openwakeword
 import whisper
 import time
 import threading
@@ -11,206 +9,160 @@ from queue import Queue
 
 
 class WakeWordAssistant:
+    """
+    使用 Whisper 持续监听 + 中文关键词匹配的语音助手。
+
+    工作流程:
+    1. 监听阶段：持续录制 3 秒音频，用 Whisper 快速识别
+    2. 唤醒检测：检查识别结果中是否包含预设的中文唤醒词
+    3. 命令识别：检测到唤醒词后，录制 10 秒音频做完整识别
+    4. 停止命令：识别到 "stop" 或 "停止" 时退出
+    """
+
     def __init__(self):
+        # 音频参数
         self.rate = 16000
         self.channels = 1
         self.dtype = 'int16'
-        self.chunk_size = 1280
 
-        self.wakeword_model = None
-        self.whisper_model = None
+        # 两个阶段的录制时长（秒）
+        self.wake_duration = 3      # 监听阶段：持续识别
+        self.command_duration = 10   # 命令阶段：完整识别
 
-        self.audio_queue = Queue()
-        self.detection_queue = Queue()
+        # 中文唤醒词列表（用户可以添加更多）
+        self.wake_words = ["小助手", "你好助手", "助手", "你好小助手", "嘿小助手"]
 
-        self.is_running = False
-        self.is_recording = False
-        self.wakeword_detected = False
-        self.recorded_audio = []
+        # 运行状态
+        self.is_running = True
+        self.is_command_mode = False
 
+        # 初始化模型
         self.initialize_models()
 
-    def download_model_with_powershell(self, url, dest_path):
-        try:
-            ps_cmd = (
-                "Invoke-WebRequest -Uri '" + url +
-                "' -OutFile '" + dest_path + "' -UseBasicParsing"
-            )
-            subprocess.run(["powershell", "-Command", ps_cmd], check=True)
-            return True
-        except Exception as e:
-            print(f"  PowerShell download failed: {e}")
-            return False
-
-    def download_wakeword_models(self):
-        models_dir = os.path.join(
-            os.path.dirname(openwakeword.__file__),
-            'resources', 'models'
-        )
-        os.makedirs(models_dir, exist_ok=True)
-
-        model_info = [
-            ('melspectrogram.onnx',
-             'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx'),
-            ('embedding_model.onnx',
-             'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx'),
-            ('hey_jarvis_v0.1.onnx',
-             'https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx'),
-        ]
-
-        all_exist = True
-        for model_name, url in model_info:
-            model_path = os.path.join(models_dir, model_name)
-            if not os.path.exists(model_path):
-                all_exist = False
-                break
-
-        if not all_exist:
-            print("Downloading wakeword models (using PowerShell)...")
-            for model_name, url in model_info:
-                model_path = os.path.join(models_dir, model_name)
-                if not os.path.exists(model_path):
-                    print(f"  {model_name}...", end=" ")
-                    if self.download_model_with_powershell(url, model_path):
-                        print("OK")
-                    else:
-                        print("FAILED")
-                        print(f"  Please download manually: {url}")
-                        print(f"  And save to: {model_path}")
-            print("Download step completed.")
-
     def initialize_models(self):
-        print("Setting up wakeword models...")
-        self.download_wakeword_models()
-
-        print("Loading wakeword model (hey_jarvis, ONNX)...")
-        self.wakeword_model = openwakeword.Model(
-            wakeword_models=['hey_jarvis'],
-            inference_framework='onnx'
-        )
-        print("Wakeword model loaded!")
-
-        print("Loading Whisper model (base)...")
+        print("Loading Whisper base model...")
         self.whisper_model = whisper.load_model("base")
-        print("Whisper model loaded!")
+        print("Whisper model loaded!\n")
 
-    def audio_callback(self, indata, frames, time_info, status):
-        if status:
-            pass
-        audio_data = indata.flatten().astype(np.int16)
-        self.audio_queue.put(audio_data)
-        if not self.is_recording:
-            self.detection_queue.put(audio_data)
+    def contains_wake_word(self, text):
+        """检查文本中是否包含任何唤醒词。"""
+        text_lower = text.lower()
+        for w in self.wake_words:
+            if w in text_lower:
+                return True
+        return False
 
-    def wakeword_detection_thread(self):
-        print("\nWakeword detection started...")
-        print("Say 'hey jarvis' to activate voice recognition")
-        print("Say 'stop' to exit the program\n")
+    def contains_stop(self, text):
+        """检查文本中是否包含停止词。"""
+        text_lower = text.lower()
+        return ("stop" in text_lower) or ("停止" in text_lower)
+
+    def record_audio(self, duration_seconds):
+        """录制指定时长的音频，返回 float32 numpy 数组。"""
+        num_samples = int(self.rate * duration_seconds)
+        print(f"  [录制中] {duration_seconds} 秒...")
+        audio = sd.rec(
+            frames=num_samples,
+            samplerate=self.rate,
+            channels=self.channels,
+            dtype='int16',
+            blocking=True
+        )
+        sd.wait()
+        audio = audio.flatten().astype(np.float32) / 32768.0
+        return audio
+
+    def transcribe(self, audio, description="识别"):
+        """用 Whisper 识别音频，返回文本。"""
+        print(f"  [{description}中...")
+        result = self.whisper_model.transcribe(
+            audio,
+            language='zh',
+            fp16=False,
+            verbose=False
+        )
+        text = result["text"].strip()
+        return text
+
+    def wake_detection_loop(self):
+        """监听阶段：持续识别，检测唤醒词。"""
+        print("=" * 60)
+        print("语音助手已启动！")
+        print("=" * 60)
+        print(f"唤醒词: {', '.join(self.wake_words)}")
+        print(f"说 'stop' 或 '停止' 可退出程序\n")
 
         while self.is_running:
             try:
-                audio_data = self.detection_queue.get(timeout=1)
-                audio_float = audio_data.astype(np.float32) / 32768.0
+                # 1. 录制 3 秒音频（监听阶段）
+                print("[监听] 正在听...")
+                audio = self.record_audio(self.wake_duration)
 
-                predictions = self.wakeword_model.predict(audio_float)
+                # 2. Whisper 识别
+                text = self.transcribe(audio, description="监听识别")
 
-                for model_name, prob in predictions.items():
-                    if prob > 0.5:
-                        print(f"\n>> Wakeword detected! ({model_name}: {prob:.2f})")
-                        self.wakeword_detected = True
-                        self.start_recording()
-                        break
+                if text:
+                    print(f"  -> 听到: '{text}'")
+                else:
+                    print(f"  -> (静音/无语音)")
 
-            except Exception:
-                continue
+                # 3. 检查是否包含停止词（在监听阶段也可直接退出）
+                if text and self.contains_stop(text):
+                    print("\n[停止命令收到，正在退出...\n")
+                    self.is_running = False
+                    break
 
-    def start_recording(self):
-        print(">> Listening for command... (max 10 seconds)")
-        self.is_recording = True
-        self.recorded_audio = []
+                # 4. 检查是否包含唤醒词
+                if text and self.contains_wake_word(text):
+                    print("\n>>> 唤醒词检测到！准备识别命令...\n")
+                    self.command_mode()
 
-        recording_thread = threading.Thread(target=self.record_audio)
-        recording_thread.start()
+            except KeyboardInterrupt:
+                print("\n用户中断，正在退出...")
+                self.is_running = False
+                break
+            except Exception as e:
+                print(f"发生错误: {e}")
+                import traceback
+                traceback.print_exc()
 
-    def record_audio(self):
-        max_duration = 10
-        start_time = time.time()
+    def command_mode(self):
+        """命令识别阶段：录制更长的音频并完整识别。"""
+        # 录制 10 秒命令
+        print("[命令] 请说出你的命令...")
+        audio = self.record_audio(self.command_duration)
 
-        while self.is_recording and self.is_running:
-            try:
-                audio_data = self.audio_queue.get(timeout=0.1)
-                self.recorded_audio.append(audio_data)
+        # Whisper 识别
+        text = self.transcribe(audio, description="命令")
 
-                if time.time() - start_time > max_duration:
-                    print(">> Max duration reached, processing...")
-                    self.stop_recording()
+        print("\n" + "=" * 60)
+        print(f"识别结果: {text}")
+        print("=" * 60 + "\n")
 
-            except Exception:
-                continue
-
-    def stop_recording(self):
-        self.is_recording = False
-
-        if len(self.recorded_audio) > 0:
-            self.process_audio()
-
-        self.wakeword_detected = False
-        print("\nWakeword detection resumed...")
-        print("Say 'hey jarvis' to activate voice recognition\n")
-
-    def process_audio(self):
-        print(">> Processing audio with Whisper...")
-
-        audio_data = np.concatenate(self.recorded_audio)
-        audio_float = audio_data.astype(np.float32) / 32768.0
-
-        result = self.whisper_model.transcribe(
-            audio_float,
-            language='zh',
-            fp16=False
-        )
-
-        text = result['text'].strip()
-        print(f"\n>> Recognition result: {text}")
-
-        if 'stop' in text.lower() or '停止' in text:
-            print(">> Stop command received, shutting down...")
+        # 检查是否是停止命令
+        if text and self.contains_stop(text):
+            print("[停止] 收到停止命令，退出程序...\n")
             self.is_running = False
+            return
+
+        print("[返回] 回到监听模式...\n")
 
     def run(self):
-        self.is_running = True
-
-        detection_thread = threading.Thread(target=self.wakeword_detection_thread)
-        detection_thread.start()
-
+        """启动语音助手主入口。"""
         try:
-            with sd.InputStream(
-                samplerate=self.rate,
-                channels=self.channels,
-                dtype=self.dtype,
-                blocksize=self.chunk_size,
-                callback=self.audio_callback
-            ):
-                while self.is_running:
-                    time.sleep(0.1)
+            self.wake_detection_loop()
         except KeyboardInterrupt:
-            print("\n>> Keyboard interrupt received...")
-            self.is_running = False
-
-        detection_thread.join()
-        print(">> Assistant stopped.")
+            print("\n程序被中断。")
+        finally:
+            print("\n语音助手已停止。")
 
 
 if __name__ == "__main__":
     try:
-        print("=" * 60)
-        print("OpenWakeWord + Whisper Voice Assistant")
-        print("=" * 60)
-        print()
         assistant = WakeWordAssistant()
         assistant.run()
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"错误: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
