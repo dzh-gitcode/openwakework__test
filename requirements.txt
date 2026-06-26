@@ -2,3 +2,5 @@ openai-whisper>=20231117
 pyaudio>=0.2.13
 soundfile>=0.13.0
 numpy>=1.21.0
+pyttsx3>=2.99
+pywin32>=306
