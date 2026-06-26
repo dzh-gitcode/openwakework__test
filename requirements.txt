@@ -1,4 +1,4 @@
 openai-whisper>=20231117
-sounddevice>=0.5.0
+pyaudio>=0.2.13
 soundfile>=0.13.0
 numpy>=1.21.0

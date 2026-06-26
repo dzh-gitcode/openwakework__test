@@ -1,11 +1,9 @@
 import os
 import sys
-import sounddevice as sd
+import pyaudio
 import numpy as np
 import whisper
 import time
-import threading
-from queue import Queue
 
 
 class WakeWordAssistant:
@@ -23,7 +21,8 @@ class WakeWordAssistant:
         # 音频参数
         self.rate = 16000
         self.channels = 1
-        self.dtype = 'int16'
+        self.format = pyaudio.paInt16
+        self.chunk = 1024
 
         # 两个阶段的录制时长（秒）
         self.wake_duration = 3      # 监听阶段：持续识别
@@ -34,10 +33,10 @@ class WakeWordAssistant:
 
         # 运行状态
         self.is_running = True
-        self.is_command_mode = False
 
-        # 初始化模型
+        # 初始化模型和音频设备
         self.initialize_models()
+        self.pyaudio = pyaudio.PyAudio()
 
     def initialize_models(self):
         print("Loading Whisper base model...")
@@ -61,20 +60,43 @@ class WakeWordAssistant:
         """录制指定时长的音频，返回 float32 numpy 数组。"""
         num_samples = int(self.rate * duration_seconds)
         print(f"  [录制中] {duration_seconds} 秒...")
-        audio = sd.rec(
-            frames=num_samples,
-            samplerate=self.rate,
-            channels=self.channels,
-            dtype='int16',
-            blocking=True
-        )
-        sd.wait()
-        audio = audio.flatten().astype(np.float32) / 32768.0
-        return audio
+
+        try:
+            stream = self.pyaudio.open(
+                format=self.format,
+                channels=self.channels,
+                rate=self.rate,
+                input=True,
+                frames_per_buffer=self.chunk
+            )
+
+            frames = []
+            for _ in range(0, int(self.rate / self.chunk * duration_seconds)):
+                data = stream.read(self.chunk)
+                frames.append(data)
+
+            stream.stop_stream()
+            stream.close()
+
+            audio_data = b''.join(frames)
+            audio = np.frombuffer(audio_data, dtype=np.int16)
+
+            # 确保长度正确
+            if len(audio) > num_samples:
+                audio = audio[:num_samples]
+            elif len(audio) < num_samples:
+                audio = np.pad(audio, (0, num_samples - len(audio)), mode='constant')
+
+            audio = audio.astype(np.float32) / 32768.0
+            return audio
+
+        except Exception as e:
+            print(f"  音频录制错误: {e}")
+            raise
 
     def transcribe(self, audio, description="识别"):
         """用 Whisper 识别音频，返回文本。"""
-        print(f"  [{description}中...")
+        print(f"  {description}中...")
         result = self.whisper_model.transcribe(
             audio,
             language='zh',
@@ -147,6 +169,10 @@ class WakeWordAssistant:
 
         print("[返回] 回到监听模式...\n")
 
+    def cleanup(self):
+        """清理资源。"""
+        self.pyaudio.terminate()
+
     def run(self):
         """启动语音助手主入口。"""
         try:
@@ -154,6 +180,7 @@ class WakeWordAssistant:
         except KeyboardInterrupt:
             print("\n程序被中断。")
         finally:
+            self.cleanup()
             print("\n语音助手已停止。")
 
 

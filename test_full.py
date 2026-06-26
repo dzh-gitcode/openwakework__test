@@ -1,5 +1,5 @@
 import whisper
-import sounddevice
+import pyaudio
 import numpy as np
 
 print("=" * 60)
@@ -12,18 +12,21 @@ w = whisper.load_model('base')
 print("      OK - Whisper 模型加载成功")
 
 print("[2/3] 测试语音识别...")
-audio = np.zeros(16000, dtype=np.float32)  # 1 秒静音
+audio = np.zeros(16000, dtype=np.float32)
 result = w.transcribe(audio, language='zh', fp16=False)
 text = result["text"]
 print(f"      OK - 识别结果: '{text}'")
 
-print("[3/3] 测试音频设备...")
-devices = sounddevice.query_devices()
-default = sounddevice.default.device
-print(f"      OK - 发现 {len(devices)} 个音频设备")
-print(f"           默认输入设备 ID: {default[0]}")
-print(f"           默认输出设备 ID: {default[1]}")
+print("[3/3] 测试 PyAudio 音频设备...")
+pa = pyaudio.PyAudio()
+device_count = pa.get_device_count()
+print(f"      OK - 发现 {device_count} 个音频设备")
 
+default_input = pa.get_default_input_device_info()
+print(f"           默认输入设备: {default_input.get('name', '未知')}")
+print(f"           采样率: {default_input.get('defaultSampleRate', '未知')}")
+
+pa.terminate()
 print()
 print("=" * 60)
 print("所有测试通过！")
